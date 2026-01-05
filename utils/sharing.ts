@@ -6,7 +6,7 @@ import { Bill, Member } from '../types';
 // 1. 請先依照 DEPLOY.md 的步驟將網站部署到 Vercel 或 Netlify。
 // 2. 取得您的正式網址 (例如: https://my-bill-app.vercel.app)。
 // 3. 將網址填入下方引號中，這樣分享連結就會固定使用該網址。
-const CUSTOM_APP_URL: string = ""; 
+const CUSTOM_APP_URL: string = "https://ss-one-lyart.vercel.app"; 
 
 // ==========================================
 
