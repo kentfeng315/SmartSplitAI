@@ -15,8 +15,18 @@
    - Framework Preset 選擇 **Vite**。
    - 點擊 **Deploy**。
 
-3. **完成**：
-   - 等待約 1 分鐘，Vercel 會給您一個正式網址 (例如 `https://smart-split.vercel.app`)。
+3. **設定 AI API Key (重要！)**：
+   - 部署完成後，網站應該可以開啟，但 AI 功能可能無法使用。
+   - 在 Vercel 的專案頁面，點擊上方的 **Settings**。
+   - 選擇左側的 **Environment Variables**。
+   - 新增一個變數：
+     - Key: `API_KEY`
+     - Value: `您的_Google_Gemini_API_Key` (請貼上您真正的金鑰)
+   - 點擊 Save。
+   - **最後一步**：回到 **Deployments** 分頁，點擊最近一次部署右側的 "..." 選單，選擇 **Redeploy** (這樣新的環境變數才會生效)。
+
+4. **完成**：
+   - Vercel 會給您一個正式網址 (例如 `https://smart-split.vercel.app`)。
    - 這個網址就是您的「外部網址」。
 
 ## 方法二：修改 App 設定 (優化連結)

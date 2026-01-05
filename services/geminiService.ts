@@ -1,7 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 interface ReceiptData {
   title: string;
   amount: number;
@@ -9,6 +7,9 @@ interface ReceiptData {
 
 export const parseReceiptImage = async (base64Image: string): Promise<ReceiptData> => {
   try {
+    // Initialize AI client lazily to prevent app crash on load if process.env is undefined in some environments
+    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: {
