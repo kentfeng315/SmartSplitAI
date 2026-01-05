@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ViewState, Member, Bill } from './types';
-import { Users, Receipt, Calculator, Share2, Download, Upload, Link, AlertCircle, RotateCcw, FileJson, CheckCircle2, HardDrive, Loader2, Globe, HelpCircle, X } from 'lucide-react';
+import { Users, Receipt, Calculator, Share2, Download, Upload, AlertCircle, RotateCcw, CheckCircle2, HardDrive, Loader2 } from 'lucide-react';
 import { MemberEdit } from './components/MemberEdit';
 import { BillList } from './components/BillList';
 import { Settlement } from './components/Settlement';
-import { generateSnapshotUrl, parseSnapshotData, shortenUrl, isLocalEnvironment } from './utils/sharing';
+import { generateSnapshotUrl, parseSnapshotData, shortenUrl } from './utils/sharing';
 import { CloudData } from './services/cloudService';
 
 // Initial Mock Data Generator (Default 11 members)
@@ -20,7 +20,6 @@ const App: React.FC = () => {
   const [members, setMembers] = useState<Member[]>([]);
   const [bills, setBills] = useState<Bill[]>([]);
   const [showDriveGuide, setShowDriveGuide] = useState(false);
-  const [showShareHelp, setShowShareHelp] = useState(false);
   const [isShortening, setIsShortening] = useState(false);
   
   // File Input Ref
@@ -92,7 +91,23 @@ const App: React.FC = () => {
 
   // --- Sharing: Snapshot Link ---
   const handleCopySnapshotLink = async () => {
-    const url = generateSnapshotUrl(members, bills);
+    let baseUrl: string | undefined = undefined;
+    const hostname = window.location.hostname;
+
+    // 检测是否為開發預覽環境 (Project IDX / Cloud Shell / Localhost)
+    if (hostname.includes('scf.usercontent.goog') || hostname === 'localhost' || hostname === '127.0.0.1') {
+      const userUrl = prompt(
+        "偵測到您正在使用開發/預覽網址。\n\n若您已部署到正式網站 (如 Vercel, Firebase)，請輸入您的正式網址以產生正確連結：\n(若未部署，請直接按確認或取消)", 
+        "https://"
+      );
+      
+      // 只有當使用者輸入了有效的 http/https 網址才使用
+      if (userUrl && userUrl.startsWith('http') && userUrl !== "https://") {
+        baseUrl = userUrl;
+      }
+    }
+
+    const url = generateSnapshotUrl(members, bills, baseUrl);
     
     if (!url) {
        showToast('產生連結失敗', 'error');
@@ -104,26 +119,15 @@ const App: React.FC = () => {
       return;
     }
     
-    // Check if localhost
-    const isLocal = isLocalEnvironment();
-
     setIsShortening(true);
     showToast('正在建立短網址...', 'info');
 
     try {
-      // Even if local, we try to shorten (it might work, but the link won't be accessible to others)
       const finalUrl = await shortenUrl(url);
       await navigator.clipboard.writeText(finalUrl);
-      
-      if (isLocal) {
-        showToast("已複製！(注意：此為本機連結，朋友可能無法開啟)", 'info');
-        // Automatically show help for localhost users
-        setTimeout(() => setShowShareHelp(true), 1500);
-      } else {
-        showToast("已複製短網址！", 'success');
-      }
+      showToast(baseUrl ? "已複製正式網址連結！" : "已複製連結！", 'success');
     } catch (e) {
-      // Fallback to raw url
+      // Fallback to raw url if shortener fails
       await navigator.clipboard.writeText(url);
       showToast("已複製連結 (短網址服務忙碌中)", 'success');
     } finally {
@@ -278,14 +282,6 @@ const App: React.FC = () => {
                   {isShortening ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
                   <span className="hidden sm:inline">複製連結</span>
                 </button>
-
-                {/* Help Button */}
-                <button
-                  onClick={() => setShowShareHelp(true)}
-                  className="p-1.5 text-gray-400 hover:text-indigo-600 rounded-full transition-colors"
-                >
-                  <HelpCircle className="w-5 h-5" />
-                </button>
                 
                 <button 
                   onClick={handleReset}
@@ -304,47 +300,6 @@ const App: React.FC = () => {
       {/* Main Content */}
       <main className="max-w-3xl mx-auto px-4 py-6">
         
-        {/* Share Help Modal */}
-        {showShareHelp && (
-          <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
-             <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
-                <div className="p-4 bg-indigo-600 flex justify-between items-center">
-                   <h3 className="text-white font-bold flex items-center gap-2">
-                     <Globe className="w-5 h-5"/>
-                     如何分享給朋友？
-                   </h3>
-                   <button onClick={() => setShowShareHelp(false)} className="text-white/80 hover:text-white"><X className="w-5 h-5"/></button>
-                </div>
-                <div className="p-5 space-y-4">
-                  <div className="flex gap-3 items-start">
-                    <div className="bg-gray-100 p-2 rounded-lg text-lg font-bold text-gray-500">1</div>
-                    <div>
-                      <h4 className="font-bold text-gray-800">網站需要上線</h4>
-                      <p className="text-sm text-gray-600 leading-relaxed">
-                        如果您的網址是 <code>localhost</code> 或 <code>blob:...</code>，這是您的私人測試環境。您需要將網站部署到公開網域 (如 Vercel, Netlify) 連結才會生效。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex gap-3 items-start">
-                     <div className="bg-gray-100 p-2 rounded-lg text-lg font-bold text-gray-500">2</div>
-                     <div>
-                       <h4 className="font-bold text-gray-800">替代方案：檔案備份</h4>
-                       <p className="text-sm text-gray-600 leading-relaxed">
-                         還沒上線嗎？沒關係！<br/>
-                         請點擊 <span className="inline-flex items-center px-1 py-0.5 rounded bg-gray-100 border border-gray-200 text-xs font-bold"><Download className="w-3 h-3 mr-1"/>備份</span> 下載檔案，傳給朋友後，請他們點擊 <span className="inline-flex items-center px-1 py-0.5 rounded bg-gray-100 border border-gray-200 text-xs font-bold"><Upload className="w-3 h-3 mr-1"/>載入</span> 即可。
-                       </p>
-                     </div>
-                  </div>
-                </div>
-                <div className="p-4 bg-gray-50 text-center">
-                  <button onClick={() => setShowShareHelp(false)} className="text-indigo-600 font-medium text-sm hover:underline">
-                    我瞭解了，繼續使用
-                  </button>
-                </div>
-             </div>
-          </div>
-        )}
-
         {/* Google Drive Guide Alert */}
         {showDriveGuide && (
           <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-4 relative animate-fade-in">

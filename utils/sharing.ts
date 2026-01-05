@@ -1,5 +1,15 @@
 import { Bill, Member } from '../types';
 
+// ==========================================
+// CONFIGURATION: 部署後請設定這裡
+// ==========================================
+// 1. 請先依照 DEPLOY.md 的步驟將網站部署到 Vercel 或 Netlify。
+// 2. 取得您的正式網址 (例如: https://my-bill-app.vercel.app)。
+// 3. 將網址填入下方引號中，這樣分享連結就會固定使用該網址。
+const CUSTOM_APP_URL: string = ""; 
+
+// ==========================================
+
 // Minified types for URL compression
 type MinifiedMember = [string, string]; // [id, name]
 type MinifiedBill = [string, string, number, string, string[], number]; // [id, title, amount, payerId, involvedIds, createdAt]
@@ -31,19 +41,8 @@ const unminify = (data: MinifiedData): { members: Member[], bills: Bill[] } => {
   };
 };
 
-// Check if the current environment is local
-export const isLocalEnvironment = (): boolean => {
-  const { hostname, protocol } = window.location;
-  return (
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname.startsWith('192.168.') ||
-    hostname.startsWith('10.') ||
-    protocol === 'file:'
-  );
-};
-
-export const generateSnapshotUrl = (members: Member[], bills: Bill[]): string => {
+// Added overrideBaseUrl parameter
+export const generateSnapshotUrl = (members: Member[], bills: Bill[], overrideBaseUrl?: string): string => {
   try {
     const minified = minify(members, bills);
     const json = JSON.stringify(minified);
@@ -52,33 +51,50 @@ export const generateSnapshotUrl = (members: Member[], bills: Bill[]): string =>
       (match, p1) => String.fromCharCode(parseInt(p1, 16))
     ));
     
-    // 1. Get current full URL
-    let currentHref = window.location.href;
-    
-    // 2. Force remove 'blob:' prefix if it exists (common in preview environments)
-    // RegExp handles cases like "blob:https://..." -> "https://..."
-    if (currentHref.startsWith('blob:')) {
-      currentHref = currentHref.replace(/^blob:/, '');
+    let urlObj: URL | null = null;
+
+    // 1. Priority: Function Argument (Dynamic override from UI)
+    if (overrideBaseUrl && overrideBaseUrl.startsWith('http')) {
+        try {
+            urlObj = new URL(overrideBaseUrl);
+        } catch(e) {
+            console.warn("Invalid overrideBaseUrl");
+        }
     }
 
-    // 3. Construct URL object to manipulate params
-    // If the stripped URL is invalid (e.g. just a path), we might need to fallback
-    let urlObj: URL;
-    try {
-      urlObj = new URL(currentHref);
-    } catch (e) {
-      // If stripped URL is invalid, try to assume current origin if possible, otherwise fail gracefully
-      if (window.location.origin && window.location.origin !== 'null') {
-         urlObj = new URL(window.location.pathname, window.location.origin);
-      } else {
-         // Last resort: return just the encoded data if we can't build a domain URL
-         console.warn("Could not determine base URL, returning raw data string");
-         return `?data=${encoded}`; 
+    // 2. Priority: Config Constant
+    if (!urlObj && CUSTOM_APP_URL.startsWith('http')) {
+      try {
+        urlObj = new URL(CUSTOM_APP_URL);
+      } catch (e) {
+        console.warn("Invalid CUSTOM_APP_URL");
+      }
+    }
+
+    // 3. Priority: Current Browser URL
+    if (!urlObj) {
+      let currentHref = window.location.href;
+      
+      // Force remove 'blob:' prefix if it exists (common in preview environments)
+      if (currentHref.startsWith('blob:')) {
+        currentHref = currentHref.replace(/^blob:/, '');
+      }
+
+      try {
+        urlObj = new URL(currentHref);
+      } catch (e) {
+        // If stripped URL is invalid, try to assume current origin
+        if (window.location.origin && window.location.origin !== 'null') {
+           urlObj = new URL(window.location.pathname, window.location.origin);
+        } else {
+           console.warn("Could not determine base URL, returning raw data string");
+           return `?data=${encoded}`; 
+        }
       }
     }
 
     // 4. Set the data param
-    // Clear other params to keep it clean
+    // We clear other params to keep it clean, but preserve path
     urlObj.search = ''; 
     urlObj.searchParams.set('data', encoded);
     
