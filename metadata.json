@@ -1,0 +1,7 @@
+{
+  "name": "SmartSplit AI",
+  "description": "An intelligent bill splitting application with AI receipt recognition, allowing groups (default 11 members) to easily manage expenses and calculate settlements.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
