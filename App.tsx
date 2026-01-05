@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { ViewState, Member, Bill } from './types';
-import { Users, Receipt, Calculator, Share2, Download, Upload, AlertCircle, RotateCcw, CheckCircle2, HardDrive, Loader2 } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { ViewState, Member, Bill, SyncStatus, FirebaseConfig } from './types';
+import { Users, Receipt, Calculator, Share2, Download, Upload, AlertCircle, RotateCcw, CheckCircle2, HardDrive, Loader2, Link as LinkIcon } from 'lucide-react';
 import { MemberEdit } from './components/MemberEdit';
 import { BillList } from './components/BillList';
 import { Settlement } from './components/Settlement';
+import { Collaboration } from './components/Collaboration';
 import { generateSnapshotUrl, parseSnapshotData, shortenUrl } from './utils/sharing';
 import { CloudData } from './services/cloudService';
+import { initFirebase, subscribeToRoom, updateRoomData, RoomData } from './services/firebaseService';
 
 // Initial Mock Data Generator (Default 11 members)
 const generateInitialMembers = (): Member[] => 
@@ -22,6 +24,11 @@ const App: React.FC = () => {
   const [showDriveGuide, setShowDriveGuide] = useState(false);
   const [isShortening, setIsShortening] = useState(false);
   
+  // Collaboration State
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('offline');
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const isRemoteUpdate = useRef(false); // Flag to prevent echo loops
+
   // File Input Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -32,29 +39,44 @@ const App: React.FC = () => {
   // --- Initialization ---
   useEffect(() => {
     const initApp = async () => {
-      // 1. Sanitize URL to prevent 404s from bad paths
+      // 1. Sanitize URL
       const path = window.location.pathname;
       if (path !== '/' && path !== '/index.html' && !path.includes('.')) {
         window.history.replaceState({}, '', '/' + window.location.search);
       }
 
       const params = new URLSearchParams(window.location.search);
+      const roomParam = params.get('room');
       const dataFromUrl = params.get('data');
 
-      // Load from Snapshot URL
+      // Initialize Firebase config if exists in local storage
+      const savedConfig = localStorage.getItem('firebase_config');
+      if (savedConfig) {
+        try {
+           initFirebase(JSON.parse(savedConfig));
+        } catch(e) { console.error("Config load fail", e) }
+      }
+
+      // Priority 1: Join Room (Collaboration Mode)
+      if (roomParam) {
+        setRoomId(roomParam);
+        connectToRoom(roomParam);
+        return;
+      }
+
+      // Priority 2: Snapshot URL
       if (dataFromUrl) {
         const parsed = parseSnapshotData(dataFromUrl);
         if (parsed) {
           setMembers(parsed.members);
           setBills(parsed.bills);
           showToast('已載入連結中的帳單資料', 'info');
-          // Clean URL
           window.history.replaceState({}, '', window.location.pathname);
           return; 
         }
       } 
       
-      // Load from Local Storage
+      // Priority 3: Local Storage
       loadFromLocal();
     };
 
@@ -69,67 +91,137 @@ const App: React.FC = () => {
     setBills(savedBills ? JSON.parse(savedBills) : []);
   };
 
+  const connectToRoom = (id: string) => {
+     // Check if we have firebase config first
+     if (!localStorage.getItem('firebase_config') && !process.env.FIREBASE_CONFIG) {
+        // If no config, we can't join. But we set RoomID state so the UI prompts for config.
+        setSyncStatus('offline');
+        showToast('請先設定資料庫連線以加入房間', 'info');
+        return;
+     }
+
+     setSyncStatus('connecting');
+     
+     // Subscribe
+     const unsubscribe = subscribeToRoom(id, (data: RoomData) => {
+        isRemoteUpdate.current = true;
+        setMembers(data.members);
+        setBills(data.bills);
+        setSyncStatus('online');
+        // Reset flag after render cycle
+        setTimeout(() => { isRemoteUpdate.current = false; }, 0);
+     });
+
+     // Save unsubscribe for cleanup? 
+     // For simplicity in this demo, we assume session lasts until reload or explicit disconnect.
+     return unsubscribe;
+  };
+
+  const handleStartSession = (newRoomId: string) => {
+    setRoomId(newRoomId);
+    
+    // Update URL without reload
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', newRoomId);
+    window.history.pushState({}, '', url);
+
+    // Initial push of current local data to the new room
+    updateRoomData(newRoomId, members, bills).then(() => {
+       connectToRoom(newRoomId);
+       showToast('房間已建立！', 'success');
+    });
+  };
+
+  const handleDisconnect = () => {
+    if(window.confirm("確定要離開線上協作模式嗎？")) {
+      setSyncStatus('offline');
+      setRoomId(null);
+      // Clean URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete('room');
+      window.history.pushState({}, '', url);
+      window.location.reload(); // Simple way to clear subscriptions
+    }
+  };
+
   const handleReset = () => {
     if(window.confirm('確定要清除所有資料重置嗎？')) {
-      setMembers(generateInitialMembers());
+      const resetMembers = generateInitialMembers();
+      setMembers(resetMembers);
       setBills([]);
-      localStorage.removeItem('members');
-      localStorage.removeItem('bills');
+      
+      if (syncStatus === 'offline') {
+        localStorage.removeItem('members');
+        localStorage.removeItem('bills');
+      }
       showToast('資料已重置', 'success');
     }
   }
 
-  // --- Persistence (Local) ---
+  // --- Persistence & Sync ---
   useEffect(() => {
-    if (members.length > 0) localStorage.setItem('members', JSON.stringify(members));
-  }, [members]);
+    if (members.length === 0 && bills.length === 0) return;
 
-  useEffect(() => {
-    localStorage.setItem('bills', JSON.stringify(bills));
-  }, [bills]);
-
-
-  // --- Sharing: Snapshot Link ---
-  const handleCopySnapshotLink = async () => {
-    let baseUrl: string | undefined = undefined;
-    const hostname = window.location.hostname;
-
-    // 检测是否為開發預覽環境 (Project IDX / Cloud Shell / Localhost)
-    if (hostname.includes('scf.usercontent.goog') || hostname === 'localhost' || hostname === '127.0.0.1') {
-      const userUrl = prompt(
-        "偵測到您正在使用開發/預覽網址。\n\n若您已部署到正式網站 (如 Vercel, Firebase)，請輸入您的正式網址以產生正確連結：\n(若未部署，請直接按確認或取消)", 
-        "https://"
-      );
-      
-      // 只有當使用者輸入了有效的 http/https 網址才使用
-      if (userUrl && userUrl.startsWith('http') && userUrl !== "https://") {
-        baseUrl = userUrl;
-      }
+    // 1. Save to Firebase if Online and NOT a remote update
+    if (syncStatus === 'online' && roomId && !isRemoteUpdate.current) {
+       // Debounce or direct? For this scale, direct is usually fine, but let's be safe
+       const timer = setTimeout(() => {
+          updateRoomData(roomId, members, bills);
+       }, 500); 
+       return () => clearTimeout(timer);
     }
 
-    const url = generateSnapshotUrl(members, bills, baseUrl);
+    // 2. Save to Local Storage if Offline
+    if (syncStatus === 'offline') {
+      localStorage.setItem('members', JSON.stringify(members));
+      localStorage.setItem('bills', JSON.stringify(bills));
+    }
+  }, [members, bills, syncStatus, roomId]);
+
+
+  // --- Sharing ---
+  const handleCopyLink = async () => {
+    let urlToShare = "";
+
+    if (syncStatus === 'online' && roomId) {
+      // Share Room Link
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.searchParams.set('room', roomId);
+      urlToShare = url.toString();
+      
+      // Use configured base URL if exists (from sharing.ts logic basically)
+      // Since we want to keep it simple, we just use current href mostly
+    } else {
+      // Snapshot Link (Old method)
+      urlToShare = generateSnapshotUrl(members, bills);
+    }
     
-    if (!url) {
+    if (!urlToShare) {
        showToast('產生連結失敗', 'error');
        return;
     }
 
-    if (url.length > 8000) {
-      showToast('資料過多，請改用「備份檔案」功能', 'error');
+    // If it's a Snapshot and huge, warn
+    if (syncStatus === 'offline' && urlToShare.length > 8000) {
+      showToast('資料過多，請改用「備份檔案」或「線上協作」功能', 'error');
       return;
     }
     
     setIsShortening(true);
-    showToast('正在建立短網址...', 'info');
+    showToast('正在處理連結...', 'info');
 
     try {
-      const finalUrl = await shortenUrl(url);
+      // Only shorten if it's long (snapshot)
+      let finalUrl = urlToShare;
+      if (urlToShare.length > 100) {
+         finalUrl = await shortenUrl(urlToShare);
+      }
       await navigator.clipboard.writeText(finalUrl);
-      showToast(baseUrl ? "已複製正式網址連結！" : "已複製連結！", 'success');
+      showToast(syncStatus === 'online' ? "已複製協作房間連結！" : "已複製快照連結！", 'success');
     } catch (e) {
-      // Fallback to raw url if shortener fails
-      await navigator.clipboard.writeText(url);
-      showToast("已複製連結 (短網址服務忙碌中)", 'success');
+      await navigator.clipboard.writeText(urlToShare);
+      showToast("已複製連結", 'success');
     } finally {
       setIsShortening(false);
     }
@@ -164,9 +256,8 @@ const App: React.FC = () => {
           if (window.confirm('確定要載入此備份檔嗎？目前的資料將被覆蓋。')) {
             setMembers(data.members);
             setBills(data.bills);
-            const newUrl = new URL(window.location.href);
-            newUrl.searchParams.delete('data');
-            window.history.pushState({}, '', newUrl);
+            
+            // If online, this will trigger the useEffect to push to Firebase
             
             showToast('備份載入成功！', 'success');
           }
@@ -234,10 +325,12 @@ const App: React.FC = () => {
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="bg-indigo-600 p-2 rounded-lg hidden sm:block">
+            <div className={`p-2 rounded-lg hidden sm:block ${syncStatus === 'online' ? 'bg-green-600' : 'bg-indigo-600'}`}>
                <Calculator className="w-5 h-5 text-white" />
             </div>
-            <h1 className="font-bold text-lg sm:text-xl tracking-tight text-gray-900">分帳 AI</h1>
+            <h1 className="font-bold text-lg sm:text-xl tracking-tight text-gray-900">
+               {syncStatus === 'online' ? '分帳 AI (線上)' : '分帳 AI'}
+            </h1>
           </div>
           
           <div className="flex items-center gap-1 sm:gap-2">
@@ -249,7 +342,7 @@ const App: React.FC = () => {
                 <button 
                   onClick={handleExportFile}
                   className="p-2 sm:px-3 sm:py-1.5 rounded-full hover:bg-white hover:shadow-sm text-gray-600 transition-all flex items-center gap-1"
-                  title="備份檔案 (存到 Google Drive)"
+                  title="備份檔案"
                 >
                   <Download className="w-4 h-4" />
                   <span className="text-xs hidden md:inline">備份</span>
@@ -257,7 +350,7 @@ const App: React.FC = () => {
                 <button 
                   onClick={() => fileInputRef.current?.click()}
                   className="p-2 sm:px-3 sm:py-1.5 rounded-full hover:bg-white hover:shadow-sm text-gray-600 transition-all flex items-center gap-1"
-                  title="載入備份 (從 Google Drive 讀取)"
+                  title="載入備份"
                 >
                   <Upload className="w-4 h-4" />
                   <span className="text-xs hidden md:inline">載入</span>
@@ -270,17 +363,18 @@ const App: React.FC = () => {
               {/* Share & Reset */}
               <div className="flex items-center gap-1">
                  <button 
-                  onClick={handleCopySnapshotLink}
+                  onClick={handleCopyLink}
                   disabled={isShortening}
                   className={`flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-full transition-all border ${
-                    isShortening 
-                      ? 'bg-gray-50 text-gray-400 border-gray-100 cursor-wait'
-                      : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+                    syncStatus === 'online'
+                      ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+                      : isShortening 
+                        ? 'bg-gray-50 text-gray-400 border-gray-100 cursor-wait'
+                        : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
                   }`}
-                  title="複製當前狀態連結傳給朋友"
                 >
-                  {isShortening ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
-                  <span className="hidden sm:inline">複製連結</span>
+                  {isShortening ? <Loader2 className="w-4 h-4 animate-spin" /> : (syncStatus === 'online' ? <LinkIcon className="w-4 h-4"/> : <Share2 className="w-4 h-4" />)}
+                  <span className="hidden sm:inline">{syncStatus === 'online' ? '邀請成員' : '複製連結'}</span>
                 </button>
                 
                 <button 
@@ -300,6 +394,14 @@ const App: React.FC = () => {
       {/* Main Content */}
       <main className="max-w-3xl mx-auto px-4 py-6">
         
+        {/* Collaboration Widget */}
+        <Collaboration 
+          status={syncStatus} 
+          roomId={roomId}
+          onConnect={handleStartSession}
+          onDisconnect={handleDisconnect}
+        />
+
         {/* Google Drive Guide Alert */}
         {showDriveGuide && (
           <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-4 relative animate-fade-in">
@@ -316,22 +418,6 @@ const App: React.FC = () => {
                     3. 其他成員只需從 Drive 下載該檔案，並點擊上方的 <b><Upload className="w-3 h-3 inline"/> 載入</b> 按鈕即可同步進度。
                   </p>
                 </div>
-             </div>
-          </div>
-        )}
-
-        {/* Info Banner for Offline Mode */}
-        {!showDriveGuide && bills.length > 0 && (
-          <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-3 mb-4 flex gap-3 items-start">
-             <div className="bg-white p-1.5 rounded-full shadow-sm">
-                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-             </div>
-             <div className="text-sm text-emerald-800">
-               <p className="font-bold">資料已自動儲存於本機</p>
-               <p className="text-emerald-600/80 mt-1">
-                 要分享給群組嗎？點擊 <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-white border border-emerald-200 text-emerald-700 text-xs font-medium"><Share2 className="w-3 h-3 mr-1"/>複製連結</span> 將自動產生短網址。<br/>
-                 或者使用 <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-white border border-emerald-200 text-emerald-700 text-xs font-medium"><Download className="w-3 h-3 mr-1"/>備份</span> 並上傳至 Google Drive。
-               </p>
              </div>
           </div>
         )}

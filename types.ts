@@ -28,3 +28,15 @@ export enum ViewState {
   BILLS = 'BILLS',
   SETTLEMENT = 'SETTLEMENT'
 }
+
+export type SyncStatus = 'offline' | 'connecting' | 'online' | 'error';
+
+export interface FirebaseConfig {
+  apiKey: string;
+  authDomain: string;
+  databaseURL: string;
+  projectId: string;
+  storageBucket: string;
+  messagingSenderId: string;
+  appId: string;
+}
